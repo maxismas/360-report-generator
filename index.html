@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>360° Report Generator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --navy: #0d1b2a;
+    --navy-mid: #1a2e44;
+    --navy-light: #243a52;
+    --accent: #c9a84c;
+    --accent-light: #e8c97a;
+    --white: #f4f1ec;
+    --muted: #8a9bb0;
+    --text: #d6cfc4;
+    --good: #4caf8a;
+    --mid: #e0a84c;
+    --card-bg: #162538;
+    --border: rgba(201,168,76,0.2);
+    --border-subtle: rgba(255,255,255,0.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'DM Sans', sans-serif; font-weight: 300; background: var(--navy); color: var(--text); min-height: 100vh; }
+  #app { display: flex; flex-direction: column; min-height: 100vh; }
+
+  /* TOPBAR */
+  .topbar {
+    background: var(--navy-mid);
+    border-bottom: 1px solid var(--border);
+    padding: 0 40px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .topbar-brand { font-family: 'Playfair Display', serif; font-size: 18px; color: var(--white); font-weight: 700; }
+  .topbar-brand span { color: var(--accent); }
+  .topbar-right { font-size: 12px; color: var(--muted); }
+
+  /* LAYOUT */
+  .main { display: flex; flex: 1; }
+  .sidebar {
+    width: 320px;
+    flex-shrink: 0;
+    background: var(--navy-mid);
+    border-right: 1px solid var(--border-subtle);
+    padding: 32px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+  .content { flex: 1; overflow-y: auto; }
+
+  /* SIDEBAR */
+  .panel-label {
+    font-size: 10px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 500;
+    margin-bottom: 12px;
+  }
+  .upload-zone {
+    border: 1px dashed rgba(201,168,76,0.35);
+    border-radius: 8px;
+    padding: 28px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: rgba(201,168,76,0.05); }
+  .upload-zone input { display: none; }
+  .upload-icon { font-size: 28px; margin-bottom: 10px; }
+  .upload-text { font-size: 13px; color: var(--muted); line-height: 1.5; }
+  .upload-text strong { color: var(--accent-light); display: block; margin-bottom: 4px; }
+  .file-info {
+    background: rgba(76,175,138,0.1);
+    border: 1px solid rgba(76,175,138,0.3);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: #4caf8a;
+    display: none;
+    margin-top: 10px;
+  }
+  .field-group { display: flex; flex-direction: column; gap: 8px; }
+  .field-group label { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+  .field-input {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    color: var(--white);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    padding: 8px 12px;
+    outline: none;
+    width: 100%;
+  }
+  .field-input:focus { border-color: var(--accent); }
+  .field-row { display: flex; flex-direction: column; gap: 10px; }
+  .generate-btn {
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    color: var(--navy);
+    cursor: pointer;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    padding: 14px;
+    width: 100%;
+    transition: background 0.2s;
+  }
+  .generate-btn:hover:not(:disabled) { background: var(--accent-light); }
+  .generate-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .hint-box {
+    background: rgba(0,0,0,0.2);
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+    padding: 12px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .hint-box strong { color: var(--text); display: block; margin-bottom: 4px; }
+
+  /* CONTENT STATES */
+  .placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    min-height: 400px;
+    gap: 16px;
+    padding: 40px;
+  }
+  .placeholder-icon { font-size: 48px; opacity: 0.3; }
+  .placeholder-text { font-size: 15px; color: var(--muted); text-align: center; line-height: 1.7; max-width: 340px; }
+  .loading {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    min-height: 400px;
+    gap: 20px;
+    padding: 40px;
+  }
+  .spinner { width: 40px; height: 40px; border: 2px solid rgba(201,168,76,0.2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { font-size: 14px; color: var(--muted); }
+  .loading-step { font-size: 12px; color: var(--accent); font-weight: 500; margin-top: 4px; }
+  .error-box {
+    display: none;
+    margin: 24px;
+    background: rgba(224,92,76,0.1);
+    border: 1px solid rgba(224,92,76,0.3);
+    border-radius: 8px;
+    padding: 20px;
+    color: #e05c4c;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+  #report-container { display: none; }
+  .report-toolbar {
+    background: var(--navy-mid);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 12px 32px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .toolbar-btn {
+    background: rgba(201,168,76,0.1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--accent-light);
+    cursor: pointer;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 1px;
+    padding: 7px 16px;
+    text-transform: uppercase;
+  }
+  .toolbar-btn:hover { background: rgba(201,168,76,0.2); }
+  .toolbar-info { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+  @media print {
+    .topbar, .sidebar, .report-toolbar { display: none !important; }
+    .main { display: block !important; }
+    .content { overflow: visible !important; }
+    #report-container { display: block !important; }
+    body { background: white !important; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div class="topbar">
+    <div class="topbar-brand">360<span>°</span> Report Generator</div>
+    <div class="topbar-right">Powered by Claude AI</div>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+
+      <div>
+        <div class="panel-label">1 · Upload Excel</div>
+        <div class="upload-zone" id="upload-zone"
+          onclick="document.getElementById('file-input').click()"
+          ondrop="handleDrop(event)"
+          ondragover="handleDragOver(event)"
+          ondragleave="handleDragLeave(event)">
+          <input type="file" id="file-input" accept=".xlsx,.xls" onchange="handleFile(event)">
+          <div class="upload-icon">📊</div>
+          <div class="upload-text">
+            <strong>Click to upload</strong>
+            .xlsx 360 feedback file
+          </div>
+        </div>
+        <div class="file-info" id="file-info"></div>
+      </div>
+
+      <div>
+        <div class="panel-label">2 · Employee Details</div>
+        <div class="field-row">
+          <div class="field-group">
+            <label>Full Name</label>
+            <input type="text" class="field-input" id="emp-name" placeholder="e.g. Sarah Johnson" oninput="checkReady()" />
+          </div>
+          <div class="field-group">
+            <label>Job Title</label>
+            <input type="text" class="field-input" id="emp-title" placeholder="e.g. Head of People" />
+          </div>
+          <div class="field-group">
+            <label>Review Period</label>
+            <input type="text" class="field-input" id="emp-period" placeholder="e.g. Q1 2026" />
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="panel-label">3 · Generate</div>
+        <button class="generate-btn" id="generate-btn" onclick="generateReport()" disabled>
+          Generate PDF Report
+        </button>
+      </div>
+
+      <div class="hint-box">
+        <strong>Expected Excel format</strong>
+        Columns = competency areas with sub-questions as headers. Rows = one per respondent. Same structure as the standard 360 survey template.
+      </div>
+
+    </div>
+
+    <div class="content">
+      <div class="placeholder" id="placeholder">
+        <div class="placeholder-icon">📋</div>
+        <div class="placeholder-text">Upload a 360 feedback Excel file, fill in the employee details, and click Generate to create a formatted report ready to save as PDF.</div>
+      </div>
+
+      <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <div>
+          <div class="loading-text">Generating report...</div>
+          <div class="loading-step" id="loading-step">Parsing Excel data</div>
+        </div>
+      </div>
+
+      <div class="error-box" id="error-box"></div>
+
+      <div id="report-container">
+        <div class="report-toolbar">
+          <button class="toolbar-btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+          <button class="toolbar-btn" onclick="resetApp()">↩ New Report</button>
+          <span class="toolbar-info">Browser Print → Save as PDF · enable Background graphics</span>
+        </div>
+        <div id="report-frame"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let parsedData = null;
+
+function handleDragOver(e) { e.preventDefault(); document.getElementById('upload-zone').classList.add('drag'); }
+function handleDragLeave() { document.getElementById('upload-zone').classList.remove('drag'); }
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('upload-zone').classList.remove('drag');
+  const file = e.dataTransfer.files[0];
+  if (file) processFile(file);
+}
+function handleFile(e) {
+  const file = e.target.files[0];
+  if (file) processFile(file);
+}
+
+function processFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const wb = XLSX.read(e.target.result, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      parsedData = { rawRows: raw, respondents: raw.slice(2).filter(r => r.some(c => c !== '')) };
+      document.getElementById('file-info').style.display = 'block';
+      document.getElementById('file-info').textContent = `✓ ${file.name} — ${parsedData.respondents.length} respondents detected`;
+      checkReady();
+    } catch(err) {
+      showError('Could not parse the Excel file.\n\n' + err.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function checkReady() {
+  const hasFile = !!parsedData;
+  const hasName = !!document.getElementById('emp-name').value.trim();
+  document.getElementById('generate-btn').disabled = !(hasFile && hasName);
+}
+
+async function generateReport() {
+  const name = document.getElementById('emp-name').value.trim();
+  const title = document.getElementById('emp-title').value.trim() || '';
+  const period = document.getElementById('emp-period').value.trim() || '';
+
+  showState('loading');
+  setLoadingStep('Preparing data...');
+
+  const rawText = parsedData.rawRows.map(r => r.join('\t')).join('\n');
+
+  const prompt = `You are analyzing a 360-degree feedback survey Excel file for ${name}${title ? ', ' + title : ''}${period ? ' (' + period + ')' : ''}.
+
+Here is the raw tab-separated data from the Excel file (row 0 = question headers, subsequent rows = one respondent per row):
+
+${rawText}
+
+Analyze this data and return a JSON object with this EXACT structure. Return ONLY JSON, no markdown, no explanation:
+
+{
+  "employeeName": "${name}",
+  "jobTitle": "${title}",
+  "period": "${period}",
+  "respondentCount": <number>,
+  "overallAvg": <number 2dp>,
+  "competencies": [
+    {
+      "name": "<competency name>",
+      "avg": <number 2dp>,
+      "questions": [
+        {
+          "text": "<question text>",
+          "scores": [<score1>, <score2>, ...],
+          "avg": <number 2dp>
+        }
+      ],
+      "comments": ["<comment1 or empty string if none>", ...]
+    }
+  ],
+  "strengths": ["<strength from respondent 1>", "<from resp 2>", ...],
+  "growthAreas": ["<growth from respondent 1>", "<from resp 2>", ...],
+  "analysis": {
+    "overallNarrative": "<2-3 sentence executive summary>",
+    "topStrengths": ["<key strength 1>", "<key strength 2>", "<key strength 3>"],
+    "developmentAreas": ["<dev area 1>", "<dev area 2>", "<dev area 3>"],
+    "priorities": ["<priority action 1>", "<priority action 2>", "<priority action 3>"],
+    "outlierNote": "<note on outlier respondent if applicable, else null>"
+  }
+}`;
+
+  try {
+    setLoadingStep('Calling Claude AI...');
+    const response = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.error?.message || JSON.stringify(err));
+    }
+
+    const result = await response.json();
+    const text = result.content[0].text.replace(/```json|```/g, '').trim();
+    setLoadingStep('Building report...');
+    const data = JSON.parse(text);
+    renderReport(data);
+  } catch (err) {
+    showError('Failed to generate report:\n\n' + err.message);
+  }
+}
+
+function renderReport(d) {
+  const colors = ['#4c9bbf', '#4caf8a', '#c9a84c', '#a07cff'];
+
+  function chip(s) {
+    const n = parseFloat(s);
+    const cls = n >= 4.5 ? 'c5' : n >= 4 ? 'c4' : n >= 3 ? 'c3' : 'clo';
+    return `<span class="chip ${cls}">${s}</span>`;
+  }
+
+  const scoreCards = d.competencies.map((c, i) => `
+    <div class="sc">
+      <div class="sc-name">${c.name}</div>
+      <div class="sc-num" style="color:${colors[i]};">${c.avg.toFixed(2)}</div>
+      <div class="sc-den">out of 5</div>
+      <div class="bar-wrap"><div class="bar" style="width:${(c.avg/5*100).toFixed(1)}%;background:${colors[i]};"></div></div>
+    </div>`).join('');
+
+  const competencySections = d.competencies.map((c, ci) => {
+    const rHeaders = (c.questions[0]?.scores || []).map((_, i) => `<th class="sc-col">R-${i+1}</th>`).join('');
+    const rows = c.questions.map(q => {
+      const avgColor = q.avg >= 4.5 ? '#4caf8a' : q.avg >= 4 ? '#4c9bbf' : '#e0a84c';
+      return `<tr>
+        <td>${q.text}</td>
+        ${q.scores.map(s => `<td class="sc-col">${chip(s)}</td>`).join('')}
+        <td class="sc-col" style="font-weight:600;color:${avgColor};">${q.avg.toFixed(1)}</td>
+      </tr>`;
+    }).join('');
+    const comments = c.comments.filter(cm => cm && cm.toLowerCase() !== 'nan' && cm.trim() !== '').map((cm, i) => `
+      <div class="cmt"><div class="rtag">Respondent ${i+1}</div>${cm}</div>`).join('') 
+      || '<div class="cmt" style="color:#8a9bb0;font-style:italic;">No comments provided.</div>';
+
+    return `
+    <section>
+      <div class="wrap">
+        <div class="sec-lbl">Competency 0${ci+1}</div>
+        <div class="comp-hdr">
+          <div class="comp-num">0${ci+1}</div>
+          <div class="comp-name">${c.name}</div>
+          <div class="comp-avg" style="color:${colors[ci]};">${c.avg.toFixed(2)} / 5</div>
+        </div>
+        <table class="qt">
+          <thead><tr><th>Question</th>${rHeaders}<th class="sc-col">Avg</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="cmt-lbl">Respondent Comments</div>
+        ${comments}
+      </div>
+    </section>`;
+  }).join('');
+
+  const strHtml = d.strengths.map((s, i) => s ? `<div class="oe"><div class="rtag">Respondent ${i+1}</div>${s}</div>` : '').filter(Boolean).join('');
+  const grHtml = d.growthAreas.map((g, i) => g ? `<div class="oe"><div class="rtag">Respondent ${i+1}</div>${g}</div>` : '').filter(Boolean).join('');
+
+  const html = `
+<style>
+  .rb * { box-sizing:border-box; margin:0; padding:0; }
+  .rb { font-family:'DM Sans',sans-serif; font-weight:300; line-height:1.7; background:#0d1b2a; color:#d6cfc4; }
+  .rh { background:linear-gradient(135deg,#0d1b2a 0%,#1a2e44 60%,#243a52 100%); border-bottom:1px solid rgba(201,168,76,.2); padding:60px 48px 48px; position:relative; overflow:hidden; }
+  .rh::before { content:'360°'; position:absolute; right:-20px; top:-30px; font-family:'Playfair Display',serif; font-size:240px; font-weight:700; color:rgba(201,168,76,.05); line-height:1; pointer-events:none; }
+  .hl { font-size:11px; letter-spacing:4px; text-transform:uppercase; color:#c9a84c; margin-bottom:12px; font-weight:500; }
+  .rh h1 { font-family:'Playfair Display',serif; font-size:52px; font-weight:700; color:#f4f1ec; line-height:1.1; margin-bottom:8px; }
+  .hsub { color:#8a9bb0; font-size:15px; }
+  .hmeta { margin-top:28px; display:flex; gap:16px; flex-wrap:wrap; }
+  .pill { background:rgba(201,168,76,.1); border:1px solid rgba(201,168,76,.2); border-radius:4px; padding:6px 16px; font-size:12px; color:#e8c97a; font-weight:500; }
+  .wrap { max-width:1100px; margin:0 auto; padding:0 32px; }
+  section { padding:56px 0; border-bottom:1px solid rgba(255,255,255,.05); }
+  .sec-lbl { font-size:10px; letter-spacing:4px; text-transform:uppercase; color:#c9a84c; font-weight:500; margin-bottom:6px; }
+  .sec-ttl { font-family:'Playfair Display',serif; font-size:30px; color:#f4f1ec; font-weight:700; margin-bottom:36px; }
+  .sg { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:40px; }
+  .sc { background:#162538; border:1px solid rgba(201,168,76,.2); border-radius:8px; padding:24px 20px; text-align:center; }
+  .sc-name { font-size:11px; text-transform:uppercase; letter-spacing:1.5px; color:#8a9bb0; font-weight:500; margin-bottom:14px; line-height:1.4; min-height:32px; display:flex; align-items:center; justify-content:center; }
+  .sc-num { font-family:'Playfair Display',serif; font-size:48px; font-weight:700; line-height:1; margin-bottom:4px; }
+  .sc-den { font-size:13px; color:#8a9bb0; }
+  .bar-wrap { margin-top:14px; background:rgba(255,255,255,.06); border-radius:2px; height:3px; overflow:hidden; }
+  .bar { height:100%; border-radius:2px; }
+  .osb { background:linear-gradient(135deg,rgba(201,168,76,.1),rgba(201,168,76,.04)); border:1px solid rgba(201,168,76,.3); border-radius:10px; padding:32px 36px; display:flex; align-items:center; gap:36px; margin-bottom:40px; }
+  .bs { font-family:'Playfair Display',serif; font-size:72px; font-weight:700; color:#c9a84c; line-height:1; flex-shrink:0; }
+  .bsl { font-size:11px; letter-spacing:3px; text-transform:uppercase; color:#8a9bb0; margin-bottom:6px; font-weight:500; }
+  .bsd { font-size:14px; color:#d6cfc4; line-height:1.6; }
+  .comp-hdr { display:flex; align-items:center; gap:16px; margin-bottom:20px; }
+  .comp-num { width:36px; height:36px; border:1px solid rgba(201,168,76,.2); border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; color:#c9a84c; font-weight:600; flex-shrink:0; }
+  .comp-name { font-family:'Playfair Display',serif; font-size:20px; color:#f4f1ec; font-weight:700; }
+  .comp-avg { margin-left:auto; font-family:'Playfair Display',serif; font-size:22px; font-weight:700; }
+  .qt { width:100%; border-collapse:collapse; margin-bottom:20px; background:#162538; border-radius:8px; overflow:hidden; border:1px solid rgba(255,255,255,.06); }
+  .qt th { font-size:10px; letter-spacing:2px; text-transform:uppercase; color:#8a9bb0; padding:10px 16px; text-align:left; background:rgba(0,0,0,.15); font-weight:500; border-bottom:1px solid rgba(255,255,255,.04); }
+  .qt th.sc-col { text-align:center; width:60px; }
+  .qt td { padding:12px 16px; border-bottom:1px solid rgba(255,255,255,.03); font-size:13.5px; color:#d6cfc4; }
+  .qt td.sc-col { text-align:center; }
+  .qt tr:last-child td { border-bottom:none; }
+  .chip { display:inline-block; width:34px; height:34px; line-height:34px; text-align:center; border-radius:50%; font-weight:600; font-size:13px; }
+  .c5 { background:rgba(76,175,138,.18); color:#4caf8a; }
+  .c4 { background:rgba(76,140,175,.18); color:#4c9bbf; }
+  .c3 { background:rgba(224,168,76,.18); color:#e0a84c; }
+  .clo { background:rgba(224,92,76,.18); color:#e05c4c; }
+  .cmt-lbl { font-size:10px; letter-spacing:2px; text-transform:uppercase; color:#8a9bb0; font-weight:500; margin-bottom:10px; }
+  .cmt { background:rgba(0,0,0,.2); border-left:2px solid rgba(201,168,76,.2); padding:14px 18px; margin-bottom:10px; font-size:13.5px; color:#b0bec8; line-height:1.7; }
+  .rtag { font-size:10px; color:#8a9bb0; letter-spacing:1px; text-transform:uppercase; margin-bottom:6px; font-weight:500; }
+  .oeg { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:8px; }
+  .oec { background:#162538; border:1px solid rgba(255,255,255,.06); border-radius:8px; padding:24px; }
+  .oet { font-size:10px; letter-spacing:3px; text-transform:uppercase; margin-bottom:14px; font-weight:600; }
+  .str { color:#4caf8a; } .gro { color:#e0a84c; }
+  .oe { border-bottom:1px solid rgba(255,255,255,.05); padding:12px 0; font-size:13.5px; color:#b0bec8; line-height:1.7; }
+  .oe:last-child { border-bottom:none; }
+  .ag { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:20px; }
+  .ac { background:#162538; border:1px solid rgba(255,255,255,.06); border-radius:8px; padding:28px; }
+  .ac h3 { font-family:'Playfair Display',serif; font-size:17px; color:#f4f1ec; font-weight:700; margin-bottom:14px; }
+  .ac ul { padding-left:18px; }
+  .ac li { margin-bottom:10px; font-size:13.5px; color:#b0bec8; line-height:1.65; }
+  .hb { background:rgba(201,168,76,.07); border:1px solid rgba(201,168,76,.25); border-radius:8px; padding:28px; margin-bottom:20px; }
+  .hb h3 { font-family:'Playfair Display',serif; font-size:17px; color:#e8c97a; font-weight:700; margin-bottom:12px; }
+  .hb p { font-size:13.5px; color:#c8bea6; line-height:1.75; }
+  .foot { padding:40px 0; text-align:center; color:#8a9bb0; font-size:12px; letter-spacing:2px; text-transform:uppercase; border-top:1px solid rgba(255,255,255,.05); }
+  @media print {
+    .rb { background:white !important; color:#1a1a1a !important; }
+    .rh, section { background:white !important; }
+    .rh { background:#f8f6f0 !important; }
+    .osb { background:#f8f6f0 !important; }
+    .sc, .ac, .oec, .hb, .qt { background:white !important; border-color:#ddd !important; }
+    .sc-num, .bs, .comp-name, .sec-ttl, .rh h1, .ac h3 { color:#1a1a1a !important; }
+    .qt th { background:#f5f5f5 !important; color:#555 !important; }
+    .cmt { background:#f9f9f9 !important; }
+  }
+</style>
+<div class="rb">
+  <div class="rh">
+    <div class="wrap">
+      <div class="hl">360° Performance Review</div>
+      <h1>${d.employeeName}</h1>
+      <div class="hsub">${d.jobTitle || '&nbsp;'}</div>
+      <div class="hmeta">
+        <div class="pill">${d.respondentCount} Respondents</div>
+        <div class="pill">${d.competencies.length} Competency Areas</div>
+        ${d.period ? `<div class="pill">${d.period}</div>` : ''}
+      </div>
+    </div>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-lbl">At a Glance</div>
+      <div class="sec-ttl">Score Overview</div>
+      <div class="osb">
+        <div class="bs">${d.overallAvg.toFixed(2)}</div>
+        <div>
+          <div class="bsl">Overall Average Score</div>
+          <div class="bsd">${d.analysis.overallNarrative}</div>
+        </div>
+      </div>
+      <div class="sg">${scoreCards}</div>
+    </div>
+  </section>
+
+  ${competencySections}
+
+  <section>
+    <div class="wrap">
+      <div class="sec-lbl">Qualitative Feedback</div>
+      <div class="sec-ttl">Strengths &amp; Growth Opportunities</div>
+      <div class="oeg">
+        <div class="oec">
+          <div class="oet str">★ Key Strengths</div>
+          ${strHtml || '<div class="oe" style="color:#8a9bb0;font-style:italic;">No responses provided.</div>'}
+        </div>
+        <div class="oec">
+          <div class="oet gro">↑ Growth Opportunities</div>
+          ${grHtml || '<div class="oe" style="color:#8a9bb0;font-style:italic;">No responses provided.</div>'}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-lbl">Synthesis</div>
+      <div class="sec-ttl">Final Analysis</div>
+      <div class="hb"><h3>Overall Picture</h3><p>${d.analysis.overallNarrative}</p></div>
+      <div class="ag">
+        <div class="ac"><h3 style="color:#4caf8a;">Consistent Strengths</h3><ul>${d.analysis.topStrengths.map(s=>`<li>${s}</li>`).join('')}</ul></div>
+        <div class="ac"><h3 style="color:#e0a84c;">Development Areas</h3><ul>${d.analysis.developmentAreas.map(s=>`<li>${s}</li>`).join('')}</ul></div>
+      </div>
+      <div class="ac" style="margin-bottom:20px;"><h3>Priority Actions</h3><ul>${d.analysis.priorities.map(s=>`<li>${s}</li>`).join('')}</ul></div>
+      ${d.analysis.outlierNote ? `<div class="ac"><h3>Respondent Context</h3><p style="font-size:13.5px;color:#b0bec8;line-height:1.65;">${d.analysis.outlierNote}</p></div>` : ''}
+    </div>
+  </section>
+
+  <div class="foot">
+    360° Feedback Report &nbsp;·&nbsp; ${d.employeeName} &nbsp;·&nbsp; Generated ${new Date().toLocaleDateString('en-GB',{month:'long',year:'numeric'})}
+  </div>
+</div>`;
+
+  document.getElementById('report-frame').innerHTML = html;
+  showState('report');
+}
+
+function showState(state) {
+  document.getElementById('placeholder').style.display = state === 'placeholder' ? 'flex' : 'none';
+  document.getElementById('loading').style.display = state === 'loading' ? 'flex' : 'none';
+  document.getElementById('error-box').style.display = 'none';
+  document.getElementById('report-container').style.display = state === 'report' ? 'block' : 'none';
+}
+function setLoadingStep(t) { document.getElementById('loading-step').textContent = t; }
+function showError(msg) {
+  const el = document.getElementById('error-box');
+  el.textContent = msg; el.style.display = 'block';
+  document.getElementById('placeholder').style.display = 'none';
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('report-container').style.display = 'none';
+}
+function resetApp() {
+  parsedData = null;
+  document.getElementById('file-input').value = '';
+  document.getElementById('file-info').style.display = 'none';
+  document.getElementById('emp-name').value = '';
+  document.getElementById('emp-title').value = '';
+  document.getElementById('emp-period').value = '';
+  document.getElementById('report-frame').innerHTML = '';
+  document.getElementById('generate-btn').disabled = true;
+  showState('placeholder');
+}
+</script>
+</body>
+</html>
