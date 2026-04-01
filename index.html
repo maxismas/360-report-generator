@@ -460,8 +460,10 @@ IMPORTANT INSTRUCTIONS:
 - Ignore any date/timestamp columns ("Submitted on" etc)
 - Some cells may be empty, "N/A", "nan", or whitespace — treat these as no response, use empty string ""
 - NEVER invent scores or comments — only use what is in the data
-- For large datasets (10+ respondents): keep each comment under 100 words, summarise longer ones preserving the key message
-- Scores must be returned as numbers, not strings
+- For ALL datasets: keep each comment under 60 words maximum — this is critical
+- For strengths and growthAreas: max 50 words each
+- For analysis fields: keep concise, 1-2 sentences max per item
+- Omit empty string entries from arrays entirely
 
 Here is the raw tab-separated data:
 
@@ -506,7 +508,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no text before 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 16000,
         messages: [{ role: 'user', content: prompt }],
         _employeeName: name,
@@ -557,14 +559,19 @@ Return ONLY a valid JSON object — no markdown, no explanation, no text before 
     try {
       let cleaned = accumulated.replace(/```json|```/g, '').trim();
       const start = cleaned.indexOf('{');
-      const end = cleaned.lastIndexOf('}');
-      if (start === -1 || end === -1) throw new Error('No JSON found');
-      cleaned = cleaned.slice(start, end + 1);
-      data = JSON.parse(cleaned);
+      if (start === -1) throw new Error('No JSON found in response');
+      cleaned = cleaned.slice(start);
+
+      // Try clean parse first
+      try {
+        data = JSON.parse(cleaned);
+      } catch(e) {
+        // JSON is truncated — try to repair it
+        data = repairAndParse(cleaned);
+      }
     } catch(e) {
-      // Show first 300 chars of raw response to help diagnose
-      const preview = accumulated.slice(0, 300);
-      throw new Error('AI returned malformed data.\n\nRaw response preview:\n' + preview);
+      const preview = accumulated.slice(0, 400);
+      throw new Error('AI returned malformed data.\n\nRaw preview:\n' + preview);
     }
 
     if (!data.competencies || !Array.isArray(data.competencies)) {
@@ -575,6 +582,40 @@ Return ONLY a valid JSON object — no markdown, no explanation, no text before 
   } catch (err) {
     showError('Failed to generate report:\n\n' + err.message);
   }
+}
+
+function repairAndParse(json) {
+  // Close any open strings, arrays and objects to make truncated JSON parseable
+  let s = json;
+
+  // Track open brackets/braces
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && inString) { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') stack.push('}');
+    else if (ch === '[') stack.push(']');
+    else if (ch === '}' || ch === ']') stack.pop();
+  }
+
+  // If we ended mid-string, close it
+  if (inString) s += '"';
+
+  // Remove trailing incomplete key-value (e.g. , "key": or , "key" )
+  s = s.replace(/,\s*"[^"]*"\s*:\s*$/, '');
+  s = s.replace(/,\s*"[^"]*"\s*$/, '');
+  s = s.replace(/,\s*$/, '');
+
+  // Close all open brackets/braces in reverse order
+  s += stack.reverse().join('');
+
+  return JSON.parse(s);
 }
 
 function renderReport(d) {
