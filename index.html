@@ -130,6 +130,30 @@
     line-height: 1.6;
   }
   .hint-box strong { color: var(--text); display: block; margin-bottom: 4px; }
+  .warn-box {
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.6;
+    margin-top: 8px;
+  }
+  .warn-box.warn {
+    background: rgba(224,168,76,0.1);
+    border: 1px solid rgba(224,168,76,0.35);
+    color: #e0a84c;
+  }
+  .warn-box.info {
+    background: rgba(76,155,191,0.1);
+    border: 1px solid rgba(76,155,191,0.3);
+    color: #4c9bbf;
+  }
+  .warn-box.danger {
+    background: rgba(224,92,76,0.1);
+    border: 1px solid rgba(224,92,76,0.3);
+    color: #e05c4c;
+  }
+  .warn-title { font-weight: 600; margin-bottom: 4px; }
+  .warn-item { margin-top: 4px; padding-left: 10px; border-left: 2px solid currentColor; }
 
   /* CONTENT STATES */
   .placeholder {
@@ -230,6 +254,7 @@
           </div>
         </div>
         <div class="file-info" id="file-info"></div>
+        <div id="preflight-warnings"></div>
       </div>
 
       <div>
@@ -318,12 +343,85 @@ function processFile(file) {
       parsedData = { rawRows: raw, respondents: raw.slice(2).filter(r => r.some(c => c !== '')) };
       document.getElementById('file-info').style.display = 'block';
       document.getElementById('file-info').textContent = `✓ ${file.name} — ${parsedData.respondents.length} respondents detected`;
+      runPreflightChecks(raw, file.name);
       checkReady();
     } catch(err) {
       showError('Could not parse the Excel file.\n\n' + err.message);
     }
   };
   reader.readAsArrayBuffer(file);
+}
+
+function runPreflightChecks(rows, filename) {
+  const warnings = [];
+  const infos = [];
+  const dangers = [];
+
+  const dataRows = rows.slice(2).filter(r => r.some(c => c !== ''));
+  const respondentCount = dataRows.length;
+  const colCount = (rows[0] || []).length;
+
+  // Respondent count warnings
+  if (respondentCount === 0) {
+    dangers.push('No respondent data found — check the file has data rows below the headers.');
+  } else if (respondentCount > 25) {
+    warnings.push(`${respondentCount} respondents detected — generation may take 30–60 seconds. Individual scores will be hidden and only averages shown to keep the report readable.`);
+  } else if (respondentCount > 15) {
+    infos.push(`${respondentCount} respondents — individual scores will be hidden in tables, averages shown.`);
+  }
+
+  // Check score scale — sample numeric cells from data rows
+  const numericValues = [];
+  dataRows.forEach(row => {
+    row.forEach(cell => {
+      const n = parseFloat(cell);
+      if (!isNaN(n) && String(cell).trim() !== '') numericValues.push(n);
+    });
+  });
+  if (numericValues.length > 0) {
+    const maxScore = Math.max(...numericValues);
+    const minScore = Math.min(...numericValues.filter(n => n > 0));
+    if (maxScore > 5) {
+      warnings.push(`Scores appear to use a 1–${Math.round(maxScore)} scale. The report is designed for 1–5 — colour coding and progress bars may not display correctly.`);
+    } else if (maxScore <= 3 && numericValues.length > 10) {
+      warnings.push(`All scores are 3 or below — this may indicate a 1–3 scale rather than 1–5. Visuals are optimised for 1–5 scoring.`);
+    }
+  }
+
+  // Multiple sheets warning — can't detect from parsed data but check filename hints
+  if (filename.toLowerCase().includes('sheet') || colCount > 40) {
+    infos.push('Large or complex file detected. Only the first sheet will be processed.');
+  }
+
+  // Very few columns
+  if (colCount < 5 && respondentCount > 0) {
+    warnings.push(`Only ${colCount} columns detected — this may not be a standard 360 format. Results may be incomplete.`);
+  }
+
+  // Check for non-standard text in what look like score columns
+  const firstDataRow = dataRows[0] || [];
+  const textInScoreCols = firstDataRow.slice(0, Math.min(8, firstDataRow.length))
+    .filter(cell => {
+      const s = String(cell).trim();
+      return s.length > 10 && isNaN(parseFloat(s));
+    });
+  if (textInScoreCols.length > 3) {
+    warnings.push('Score columns appear to contain text (e.g. "Strongly Agree") rather than numbers. Claude will attempt to extract numeric values but results may vary.');
+  }
+
+  // Render warnings
+  const container = document.getElementById('preflight-warnings');
+  container.innerHTML = '';
+
+  if (dangers.length) {
+    container.innerHTML += `<div class="warn-box danger"><div class="warn-title">⚠ Issue detected</div>${dangers.map(w => `<div class="warn-item">${w}</div>`).join('')}</div>`;
+  }
+  if (warnings.length) {
+    container.innerHTML += `<div class="warn-box warn"><div class="warn-title">⚡ Heads up</div>${warnings.map(w => `<div class="warn-item">${w}</div>`).join('')}</div>`;
+  }
+  if (infos.length) {
+    container.innerHTML += `<div class="warn-box info"><div class="warn-title">ℹ Note</div>${infos.map(w => `<div class="warn-item">${w}</div>`).join('')}</div>`;
+  }
 }
 
 function checkReady() {
@@ -351,27 +449,27 @@ async function generateReport() {
   const prompt = `You are analyzing a 360-degree feedback survey Excel file for ${name}${title ? ', ' + title : ''}${period ? ' (' + period + ')' : ''}.
 
 IMPORTANT INSTRUCTIONS:
-- The spreadsheet may have ANY structure — different numbers of competencies, questions, or columns
-- Scores may be integers (1-5) or decimals
-- Some cells may be empty, "N/A", or contain only whitespace — treat these as no response
-- Comments columns typically follow score columns for each competency
-- Open-ended feedback (strengths / growth areas) are usually the last 2 text columns
-- If you cannot find a clean structure, do your best to infer groupings from column headers
-- The "submitted on" or date column should be ignored for scoring
+- The spreadsheet may have 1 or 2 header rows. A common format is: row 0 = competency group names, row 1 = individual question texts, rows 2+ = one respondent per row
+- Scores are typically integers 1-5 or decimals — identify numeric columns as score columns
+- Comment columns typically contain long text and follow the score columns for each competency group
+- Open-ended feedback (strengths / growth areas) are usually the last 2 text columns before any date column
+- Ignore any date/timestamp columns ("Submitted on" etc)
+- Some cells may be empty, "N/A", "nan", or whitespace — treat these as no response, use empty string ""
 - NEVER invent scores or comments — only use what is in the data
-- IMPORTANT FOR LARGE DATASETS: Keep each comment under 150 words. Summarise or trim longer ones while preserving the key message. This is critical to stay within output limits.
+- For large datasets (10+ respondents): keep each comment under 100 words, summarise longer ones preserving the key message
+- Scores must be returned as numbers, not strings
 
-Here is the raw tab-separated data (row 0 = headers, subsequent rows = one respondent per row):
+Here is the raw tab-separated data:
 
 ${rawText}
 
-Return ONLY a valid JSON object with this structure — no markdown, no explanation, no extra text:
+Return ONLY a valid JSON object — no markdown, no explanation, no text before or after the JSON:
 
 {
   "employeeName": "${name}",
   "jobTitle": "${title}",
   "period": "${period}",
-  "respondentCount": <integer>,
+  "respondentCount": <integer — count of actual respondent rows only>,
   "overallAvg": <number rounded to 2dp>,
   "competencies": [
     {
@@ -384,11 +482,11 @@ Return ONLY a valid JSON object with this structure — no markdown, no explanat
           "avg": <number rounded to 2dp>
         }
       ],
-      "comments": ["<comment text max 150 words, or empty string if none>", ...]
+      "comments": ["<comment text max 100 words, or empty string if none>", ...]
     }
   ],
-  "strengths": ["<strength from respondent 1, max 100 words>", ...],
-  "growthAreas": ["<growth area from respondent 1, max 100 words>", ...],
+  "strengths": ["<strength from respondent 1, max 80 words>", ...],
+  "growthAreas": ["<growth area from respondent 1, max 80 words>", ...],
   "analysis": {
     "overallNarrative": "<2-3 sentence executive summary of this person's performance>",
     "topStrengths": ["<key strength 1>", "<key strength 2>", "<key strength 3>"],
@@ -684,6 +782,7 @@ function resetApp() {
   parsedData = null;
   document.getElementById('file-input').value = '';
   document.getElementById('file-info').style.display = 'none';
+  document.getElementById('preflight-warnings').innerHTML = '';
   document.getElementById('emp-name').value = '';
   document.getElementById('emp-title').value = '';
   document.getElementById('emp-period').value = '';
