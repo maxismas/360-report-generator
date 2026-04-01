@@ -359,6 +359,7 @@ IMPORTANT INSTRUCTIONS:
 - If you cannot find a clean structure, do your best to infer groupings from column headers
 - The "submitted on" or date column should be ignored for scoring
 - NEVER invent scores or comments — only use what is in the data
+- IMPORTANT FOR LARGE DATASETS: Keep each comment under 150 words. Summarise or trim longer ones while preserving the key message. This is critical to stay within output limits.
 
 Here is the raw tab-separated data (row 0 = headers, subsequent rows = one respondent per row):
 
@@ -383,11 +384,11 @@ Return ONLY a valid JSON object with this structure — no markdown, no explanat
           "avg": <number rounded to 2dp>
         }
       ],
-      "comments": ["<comment text or empty string if none>", ...]
+      "comments": ["<comment text max 150 words, or empty string if none>", ...]
     }
   ],
-  "strengths": ["<strength from respondent 1>", "<from resp 2>", ...],
-  "growthAreas": ["<growth area from respondent 1>", "<from resp 2>", ...],
+  "strengths": ["<strength from respondent 1, max 100 words>", ...],
+  "growthAreas": ["<growth area from respondent 1, max 100 words>", ...],
   "analysis": {
     "overallNarrative": "<2-3 sentence executive summary of this person's performance>",
     "topStrengths": ["<key strength 1>", "<key strength 2>", "<key strength 3>"],
@@ -404,7 +405,7 @@ Return ONLY a valid JSON object with this structure — no markdown, no explanat
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 6000,
+        max_tokens: 16000,
         messages: [{ role: 'user', content: prompt }],
         _employeeName: name,
         _rowCount: parsedData.rawRows.length
