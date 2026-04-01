@@ -440,91 +440,109 @@ async function generateReport() {
   const period = document.getElementById('emp-period').value.trim() || '';
 
   showState('loading');
-  setLoadingStep('Preparing data...');
+  setLoadingStep('Parsing scores...');
 
-  // Serialize raw data, trimming very long cells to avoid token limits
-  const rawText = parsedData.rawRows.map(r =>
-    r.map(cell => {
-      const s = String(cell);
-      return s.length > 200 ? s.slice(0, 200) + '...' : s;
-    }).join('\t')
-  ).join('\n');
+  // ── STEP 1: Parse ALL scores client-side from Excel data ──
+  const rows = parsedData.rawRows;
+  const headerRow0 = rows[0] || [];
+  const headerRow1 = rows[1] || [];
+  const dataRows = rows.slice(2).filter(r => r.some(c => String(c).trim() !== ''));
+  const respondentCount = dataRows.length;
 
-  const respondentCount = parsedData.respondents.length;
+  // Detect which columns are scores (majority numeric) vs text
+  const colTypes = headerRow1.map((_, ci) => {
+    const numericCount = dataRows.filter(r => {
+      const v = String(r[ci] || '').trim();
+      return v !== '' && v !== 'nan' && !isNaN(parseFloat(v));
+    }).length;
+    return numericCount >= Math.ceil(dataRows.length * 0.5) ? 'score' : 'text';
+  });
+
+  // Group columns by competency name (row 0)
+  const competencyMap = {};
+  const openEndedCols = [];
+  headerRow0.forEach((grp, ci) => {
+    const g = String(grp).trim();
+    if (!g || g === 'nan') return;
+    const isOpenEnded = g.toLowerCase().includes('open') || g.toLowerCase().includes('feedback');
+    if (isOpenEnded) { openEndedCols.push(ci); return; }
+    if (!competencyMap[g]) competencyMap[g] = { scoreCols: [], commentCols: [] };
+    if (colTypes[ci] === 'score') competencyMap[g].scoreCols.push(ci);
+    else if (colTypes[ci] === 'text') competencyMap[g].commentCols.push(ci);
+  });
+
+  // Build competencies with real calculated scores
+  const competencies = Object.entries(competencyMap).map(([compName, { scoreCols, commentCols }]) => {
+    const questions = scoreCols.map(ci => {
+      const text = String(headerRow1[ci] || '').trim();
+      const scores = dataRows.map(r => parseFloat(r[ci])).filter(n => !isNaN(n));
+      const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+      return { text, scores, avg: Math.round(avg * 100) / 100 };
+    });
+    const allScores = questions.flatMap(q => q.scores);
+    const avg = allScores.length ? Math.round(allScores.reduce((a, b) => a + b, 0) / allScores.length * 100) / 100 : 0;
+    const comments = commentCols.flatMap(ci =>
+      dataRows.map(r => String(r[ci] || '').trim()).filter(v => v && v !== 'nan' && v.length > 3)
+    );
+    return { name: compName, avg, questions, comments };
+  });
+
+  const allScores = competencies.flatMap(c => c.questions.flatMap(q => q.scores));
+  const overallAvg = allScores.length ? Math.round(allScores.reduce((a, b) => a + b, 0) / allScores.length * 100) / 100 : 0;
+
+  // Open-ended strengths / growth
+  const strengths = openEndedCols[0] !== undefined
+    ? dataRows.map(r => String(r[openEndedCols[0]] || '').trim()).filter(v => v && v !== 'nan' && v.length > 3)
+    : [];
+  const growthAreas = openEndedCols[1] !== undefined
+    ? dataRows.map(r => String(r[openEndedCols[1]] || '').trim()).filter(v => v && v !== 'nan' && v.length > 3)
+    : [];
+
+  // ── STEP 2: Ask Claude ONLY for the analysis text (~500 tokens output max) ──
+  setLoadingStep('Calling Claude AI...');
+
   const isLarge = respondentCount > 35;
-  const isMedium = respondentCount > 15 && respondentCount <= 35;
-  const isSmall = respondentCount <= 15;
+  const scoresSummary = competencies.map(c =>
+    `${c.name} (avg ${c.avg}): ${c.questions.map(q => `"${q.text.slice(0, 50)}" avg ${q.avg}`).join(' | ')}`
+  ).join('\n');
+  const commentSample = isLarge ? 'Large dataset — comments omitted' :
+    competencies.map(c => `${c.name}:\n${c.comments.slice(0, 3).map((cm, i) => `  R${i+1}: ${cm.slice(0, 120)}`).join('\n')}`).join('\n\n');
+  const strengthSample = strengths.slice(0, 4).map((s, i) => `R${i+1}: ${s.slice(0, 120)}`).join('\n') || 'None';
+  const growthSample = growthAreas.slice(0, 4).map((g, i) => `R${i+1}: ${g.slice(0, 120)}`).join('\n') || 'None';
 
-  // Scale limits to stay comfortably within 8000 token output
-  const commentLimit = isLarge ? 0 : isMedium ? 30 : 80;
-  const strengthLimit = isLarge ? 0 : isMedium ? 25 : 60;
-  const maxComments = isLarge ? 0 : isMedium ? 5 : respondentCount;
+  const analysisPrompt = `Write the analysis for a 360° review of ${name}${title ? `, ${title}` : ''}${period ? ` (${period})` : ''}.
 
-  const commentsInstruction = isLarge
-    ? `- LARGE DATASET (${respondentCount} respondents): return empty arrays [] for "comments", "strengths", "growthAreas" — scores and analysis only. This is critical to avoid output limits.`
-    : isMedium
-    ? `- MEDIUM DATASET (${respondentCount} respondents): include only the ${maxComments} most insightful comments per competency, max ${commentLimit} words each. Strengths/growthAreas: top ${maxComments} only, max ${strengthLimit} words each.`
-    : `- Keep each comment under ${commentLimit} words. Strengths/growthAreas under ${strengthLimit} words each.`;
+SCORES:
+${scoresSummary}
 
-  const prompt = `You are analyzing a 360-degree feedback survey Excel file for ${name}${title ? ', ' + title : ''}${period ? ' (' + period + ')' : ''}.
+SAMPLE COMMENTS:
+${commentSample}
 
-IMPORTANT INSTRUCTIONS:
-- The spreadsheet may have 1 or 2 header rows. Common format: row 0 = competency group names, row 1 = question texts, rows 2+ = one respondent per row
-- Scores are typically integers 1-5 or decimals — identify numeric columns as score columns
-- Comment columns contain long text and follow score columns for each competency group
-- Open-ended feedback (strengths / growth areas) are usually the last 2 text columns before any date column
-- Ignore date/timestamp columns ("Submitted on" etc)
-- Empty, "N/A", "nan", whitespace cells = no response
-- NEVER invent scores or comments — only use what is in the data
-- Scores must be numbers, not strings
-- Analysis fields: 1-2 sentences max, keep concise
-- Omit empty entries from arrays
-${commentsInstruction}
+STRENGTHS:
+${strengthSample}
 
-Here is the raw tab-separated data:
+GROWTH AREAS:
+${growthSample}
 
-${rawText}
-
-Return ONLY a valid JSON object — no markdown, no explanation, nothing before or after the JSON:
-
+Return ONLY this JSON, no markdown:
 {
-  "employeeName": "${name}",
-  "jobTitle": "${title}",
-  "period": "${period}",
-  "respondentCount": <integer>,
-  "overallAvg": <number 2dp>,
-  "competencies": [
-    {
-      "name": "<competency name>",
-      "avg": <number 2dp>,
-      "questions": [
-        { "text": "<question>", "scores": [<numbers>], "avg": <number 2dp> }
-      ],
-      "comments": [${isLarge ? '' : `"<comment>"`}]
-    }
-  ],
-  "strengths": [${isLarge ? '' : `"<strength>"`}],
-  "growthAreas": [${isLarge ? '' : `"<growth area>"`}],
-  "analysis": {
-    "overallNarrative": "<2-3 sentence summary>",
-    "topStrengths": ["<strength 1>", "<strength 2>", "<strength 3>"],
-    "developmentAreas": ["<area 1>", "<area 2>", "<area 3>"],
-    "priorities": ["<priority 1>", "<priority 2>", "<priority 3>"],
-    "outlierNote": "<outlier note or null>"
-  }
+  "overallNarrative": "<2-3 sentence executive summary>",
+  "topStrengths": ["<strength 1>", "<strength 2>", "<strength 3>"],
+  "developmentAreas": ["<area 1>", "<area 2>", "<area 3>"],
+  "priorities": ["<priority action 1>", "<priority 2>", "<priority 3>"],
+  "outlierNote": "<note if any respondent scored significantly lower/higher, else null>"
 }`;
 
   try {
-    setLoadingStep('Calling Claude AI...');
     const response = await fetch('/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 6000,
-        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: analysisPrompt }],
         _employeeName: name,
-        _rowCount: parsedData.rawRows.length
+        _rowCount: respondentCount
       })
     });
 
@@ -537,60 +555,54 @@ Return ONLY a valid JSON object — no markdown, no explanation, nothing before 
       throw new Error(msg);
     }
 
-    // Read the stream chunk by chunk
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let accumulated = '';
-    let charCount = 0;
-
-    setLoadingStep('Receiving response...');
-
+    setLoadingStep('Receiving analysis...');
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       const chunk = decoder.decode(value, { stream: true });
-
-      // Check for stream error signal
-      if (chunk.includes('__STREAM_ERROR__:')) {
-        const errMsg = chunk.split('__STREAM_ERROR__:')[1];
-        throw new Error('Stream error: ' + errMsg);
-      }
-
+      if (chunk.includes('__STREAM_ERROR__:')) throw new Error('Stream error: ' + chunk.split('__STREAM_ERROR__:')[1]);
       accumulated += chunk;
-      charCount += chunk.length;
-
-      // Live progress update
-      setLoadingStep(`Receiving response... ${(charCount / 1000).toFixed(0)}k chars`);
     }
 
-    if (!accumulated) throw new Error('Empty response from AI. Please try again.');
-
-    setLoadingStep('Building report...');
-    let data;
+    // Parse analysis JSON
+    let analysis;
     try {
-      let cleaned = accumulated.replace(/```json|```/g, '').trim();
+      const cleaned = accumulated.replace(/```json|```/g, '').trim();
       const start = cleaned.indexOf('{');
-      if (start === -1) throw new Error('No JSON found in response');
-      cleaned = cleaned.slice(start);
-
-      // Try clean parse first
-      try {
-        data = JSON.parse(cleaned);
-      } catch(e) {
-        // JSON is truncated — try to repair it
-        data = repairAndParse(cleaned);
-      }
+      const end = cleaned.lastIndexOf('}');
+      if (start !== -1 && end !== -1) {
+        analysis = JSON.parse(cleaned.slice(start, end + 1));
+      } else throw new Error('no json');
     } catch(e) {
-      const preview = accumulated.slice(0, 400);
-      throw new Error('AI returned malformed data.\n\nRaw preview:\n' + preview);
+      // Fallback if analysis parsing fails — report still works with scores
+      analysis = {
+        overallNarrative: `${name} received an overall average of ${overallAvg.toFixed(2)}/5 across ${competencies.length} competency areas from ${respondentCount} respondents.`,
+        topStrengths: ['Review individual competency scores above', 'See respondent comments for specific feedback', 'Scores reflect consistent performance'],
+        developmentAreas: ['Refer to growth areas section below', 'Discuss findings with line manager', 'Set specific development goals'],
+        priorities: ['Review this report with your manager', 'Identify 1-2 key focus areas', 'Schedule a development conversation'],
+        outlierNote: null
+      };
     }
 
-    if (!data.competencies || !Array.isArray(data.competencies)) {
-      throw new Error('Could not parse competency data from this spreadsheet. Check that scores are numeric and the format matches the expected template.');
-    }
+    // ── STEP 3: Merge client-parsed scores + Claude analysis ──
+    renderReport({
+      employeeName: name,
+      jobTitle: title,
+      period,
+      respondentCount,
+      overallAvg,
+      competencies: competencies.map(c => ({
+        ...c,
+        comments: isLarge ? [] : c.comments
+      })),
+      strengths: isLarge ? [] : strengths,
+      growthAreas: isLarge ? [] : growthAreas,
+      analysis
+    });
 
-    renderReport(data);
   } catch (err) {
     showError('Failed to generate report:\n\n' + err.message);
   }
