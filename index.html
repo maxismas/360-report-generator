@@ -446,7 +446,7 @@ async function generateReport() {
   const rawText = parsedData.rawRows.map(r =>
     r.map(cell => {
       const s = String(cell);
-      return s.length > 800 ? s.slice(0, 800) + '...' : s;
+      return s.length > 200 ? s.slice(0, 200) + '...' : s;
     }).join('\t')
   ).join('\n');
 
@@ -476,6 +476,7 @@ IMPORTANT INSTRUCTIONS:
 - Ignore date/timestamp columns ("Submitted on" etc)
 - Empty, "N/A", "nan", whitespace cells = no response
 - NEVER invent scores or comments — only use what is in the data
+- IMPORTANT: Do NOT include individual scores arrays in questions — only include the avg per question. This is critical to stay within output limits.
 - Scores must be numbers, not strings
 - Analysis fields: 1-2 sentences max, keep concise
 - Omit empty entries from arrays
@@ -498,7 +499,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, nothing before 
       "name": "<competency name>",
       "avg": <number 2dp>,
       "questions": [
-        { "text": "<question>", "scores": [<numbers>], "avg": <number 2dp> }
+        { "text": "<question>", "avg": <number 2dp> }
       ],
       "comments": [${isLarge ? '' : `"<comment>"`}]
     }
@@ -521,7 +522,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, nothing before 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 8000,
+        max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
         _employeeName: name,
         _rowCount: parsedData.rawRows.length
@@ -659,15 +660,14 @@ function renderReport(d) {
     </div>`).join('');
 
   const competencySections = d.competencies.map((c, ci) => {
-    const respondentCount = c.questions[0]?.scores?.length || 0;
-    const showIndividual = respondentCount <= 15;
-    const rHeaders = showIndividual
-      ? (c.questions[0]?.scores || []).map((_, i) => `<th class="sc-col">R-${i+1}</th>`).join('')
+    const hasScores = c.questions[0]?.scores?.length > 0;
+    const rHeaders = hasScores
+      ? (c.questions[0].scores || []).map((_, i) => `<th class="sc-col">R-${i+1}</th>`).join('')
       : '';
     const rows = c.questions.map(q => {
       const avg = parseFloat(q.avg);
       const avgColor = avg >= 4.5 ? '#4caf8a' : avg >= 4 ? '#4c9bbf' : !isNaN(avg) && avg >= 3 ? '#e0a84c' : '#e05c4c';
-      const scoreCells = showIndividual
+      const scoreCells = hasScores
         ? (q.scores || []).map(s => `<td class="sc-col">${chip(s)}</td>`).join('')
         : '';
       return `<tr>
