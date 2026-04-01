@@ -59,7 +59,10 @@ export default async function handler(req, res) {
 
     try {
       const cleaned = content.replace(/```json|```/g, '').trim();
-      JSON.parse(cleaned);
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start === -1 || end === -1) throw new Error('No JSON object found');
+      JSON.parse(cleaned.slice(start, end + 1));
       console.log(`[${requestId}] Report JSON valid — success`);
     } catch (e) {
       console.error(`[${requestId}] Claude returned invalid JSON. Preview: ${content.slice(0, 300)}`);
