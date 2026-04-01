@@ -562,7 +562,9 @@ Return ONLY a valid JSON object — no markdown, no explanation, no text before 
       cleaned = cleaned.slice(start, end + 1);
       data = JSON.parse(cleaned);
     } catch(e) {
-      throw new Error('AI returned malformed data. Please try again — if this persists, the spreadsheet format may need adjustment.');
+      // Show first 300 chars of raw response to help diagnose
+      const preview = accumulated.slice(0, 300);
+      throw new Error('AI returned malformed data.\n\nRaw response preview:\n' + preview);
     }
 
     if (!data.competencies || !Array.isArray(data.competencies)) {
