@@ -428,7 +428,12 @@ Return ONLY a valid JSON object with this structure — no markdown, no explanat
     setLoadingStep('Building report...');
     let data;
     try {
-      data = JSON.parse(text.replace(/```json|```/g, '').trim());
+      let cleaned = text.replace(/```json|```/g, '').trim();
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start === -1 || end === -1) throw new Error('No JSON found');
+      cleaned = cleaned.slice(start, end + 1);
+      data = JSON.parse(cleaned);
     } catch(e) {
       throw new Error('AI returned malformed data. Please try again — if this persists, the spreadsheet format may need adjustment.');
     }
@@ -591,7 +596,7 @@ function renderReport(d) {
           <div class="bsd">${d.analysis.overallNarrative}</div>
         </div>
       </div>
-      <div class="sg">${scoreCards}</div>
+      <div class="sg" style="grid-template-columns:repeat(${d.competencies.length},1fr);">${scoreCards}</div>
     </div>
   </section>
 
