@@ -340,44 +340,60 @@ async function generateReport() {
   showState('loading');
   setLoadingStep('Preparing data...');
 
-  const rawText = parsedData.rawRows.map(r => r.join('\t')).join('\n');
+  // Serialize raw data, trimming very long cells to avoid token limits
+  const rawText = parsedData.rawRows.map(r =>
+    r.map(cell => {
+      const s = String(cell);
+      return s.length > 800 ? s.slice(0, 800) + '...' : s;
+    }).join('\t')
+  ).join('\n');
 
   const prompt = `You are analyzing a 360-degree feedback survey Excel file for ${name}${title ? ', ' + title : ''}${period ? ' (' + period + ')' : ''}.
 
-Here is the raw tab-separated data from the Excel file (row 0 = question headers, subsequent rows = one respondent per row):
+IMPORTANT INSTRUCTIONS:
+- The spreadsheet may have ANY structure — different numbers of competencies, questions, or columns
+- Scores may be integers (1-5) or decimals
+- Some cells may be empty, "N/A", or contain only whitespace — treat these as no response
+- Comments columns typically follow score columns for each competency
+- Open-ended feedback (strengths / growth areas) are usually the last 2 text columns
+- If you cannot find a clean structure, do your best to infer groupings from column headers
+- The "submitted on" or date column should be ignored for scoring
+- NEVER invent scores or comments — only use what is in the data
+
+Here is the raw tab-separated data (row 0 = headers, subsequent rows = one respondent per row):
 
 ${rawText}
 
-Analyze this data and return a JSON object with this EXACT structure. Return ONLY JSON, no markdown, no explanation:
+Return ONLY a valid JSON object with this structure — no markdown, no explanation, no extra text:
 
 {
   "employeeName": "${name}",
   "jobTitle": "${title}",
   "period": "${period}",
-  "respondentCount": <number>,
-  "overallAvg": <number 2dp>,
+  "respondentCount": <integer>,
+  "overallAvg": <number rounded to 2dp>,
   "competencies": [
     {
-      "name": "<competency name>",
-      "avg": <number 2dp>,
+      "name": "<competency group name>",
+      "avg": <number rounded to 2dp>,
       "questions": [
         {
           "text": "<question text>",
-          "scores": [<score1>, <score2>, ...],
-          "avg": <number 2dp>
+          "scores": [<score1 as number>, <score2 as number>, ...],
+          "avg": <number rounded to 2dp>
         }
       ],
-      "comments": ["<comment1 or empty string if none>", ...]
+      "comments": ["<comment text or empty string if none>", ...]
     }
   ],
   "strengths": ["<strength from respondent 1>", "<from resp 2>", ...],
-  "growthAreas": ["<growth from respondent 1>", "<from resp 2>", ...],
+  "growthAreas": ["<growth area from respondent 1>", "<from resp 2>", ...],
   "analysis": {
-    "overallNarrative": "<2-3 sentence executive summary>",
+    "overallNarrative": "<2-3 sentence executive summary of this person's performance>",
     "topStrengths": ["<key strength 1>", "<key strength 2>", "<key strength 3>"],
-    "developmentAreas": ["<dev area 1>", "<dev area 2>", "<dev area 3>"],
-    "priorities": ["<priority action 1>", "<priority action 2>", "<priority action 3>"],
-    "outlierNote": "<note on outlier respondent if applicable, else null>"
+    "developmentAreas": ["<development area 1>", "<development area 2>", "<development area 3>"],
+    "priorities": ["<recommended priority action 1>", "<priority 2>", "<priority 3>"],
+    "outlierNote": "<note about any outlier respondent if scores vary widely, otherwise null>"
   }
 }`;
 
@@ -388,20 +404,38 @@ Analyze this data and return a JSON object with this EXACT structure. Return ONL
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 4000,
-        messages: [{ role: 'user', content: prompt }]
+        max_tokens: 6000,
+        messages: [{ role: 'user', content: prompt }],
+        _employeeName: name,
+        _rowCount: parsedData.rawRows.length
       })
     });
 
+    let errData;
     if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.error?.message || JSON.stringify(err));
+      try { errData = await response.json(); } catch(e) { errData = { error: await response.text() }; }
+      const msg = typeof errData.error === 'string'
+        ? (errData.error.includes('credit') ? 'Insufficient API credits. Please top up at console.anthropic.com → Plans & Billing.' : errData.error)
+        : JSON.stringify(errData);
+      throw new Error(msg);
     }
 
     const result = await response.json();
-    const text = result.content[0].text.replace(/```json|```/g, '').trim();
+    const text = result?.content?.[0]?.text;
+    if (!text) throw new Error('Empty response from AI. Please try again.');
+
     setLoadingStep('Building report...');
-    const data = JSON.parse(text);
+    let data;
+    try {
+      data = JSON.parse(text.replace(/```json|```/g, '').trim());
+    } catch(e) {
+      throw new Error('AI returned malformed data. Please try again — if this persists, the spreadsheet format may need adjustment.');
+    }
+
+    if (!data.competencies || !Array.isArray(data.competencies)) {
+      throw new Error('Could not parse competency data from this spreadsheet. Check that scores are numeric and the format matches the expected template.');
+    }
+
     renderReport(data);
   } catch (err) {
     showError('Failed to generate report:\n\n' + err.message);
