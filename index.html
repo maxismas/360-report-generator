@@ -449,7 +449,18 @@ Return ONLY a valid JSON object with this structure — no markdown, no explanat
 }
 
 function renderReport(d) {
-  const colors = ['#4c9bbf', '#4caf8a', '#c9a84c', '#a07cff'];
+  const colorPalette = ['#4c9bbf', '#4caf8a', '#c9a84c', '#a07cff', '#e07c4c', '#4cbfb0', '#bf4c7c', '#7cbf4c'];
+  const colors = d.competencies.map((_, i) => colorPalette[i % colorPalette.length]);
+
+  // Safe number helper — avoids crashes if Claude returns string/null
+  const safeNum = (v, dp = 2) => {
+    const n = parseFloat(v);
+    return isNaN(n) ? '—' : n.toFixed(dp);
+  };
+  const safePct = (v) => {
+    const n = parseFloat(v);
+    return isNaN(n) ? '0' : (n / 5 * 100).toFixed(1);
+  };
 
   function chip(s) {
     const n = parseFloat(s);
@@ -460,38 +471,51 @@ function renderReport(d) {
   const scoreCards = d.competencies.map((c, i) => `
     <div class="sc">
       <div class="sc-name">${c.name}</div>
-      <div class="sc-num" style="color:${colors[i]};">${c.avg.toFixed(2)}</div>
+      <div class="sc-num" style="color:${colors[i]};">${safeNum(c.avg)}</div>
       <div class="sc-den">out of 5</div>
-      <div class="bar-wrap"><div class="bar" style="width:${(c.avg/5*100).toFixed(1)}%;background:${colors[i]};"></div></div>
+      <div class="bar-wrap"><div class="bar" style="width:${safePct(c.avg)}%;background:${colors[i]};"></div></div>
     </div>`).join('');
 
   const competencySections = d.competencies.map((c, ci) => {
-    const rHeaders = (c.questions[0]?.scores || []).map((_, i) => `<th class="sc-col">R-${i+1}</th>`).join('');
+    const respondentCount = c.questions[0]?.scores?.length || 0;
+    const showIndividual = respondentCount <= 15;
+    const rHeaders = showIndividual
+      ? (c.questions[0]?.scores || []).map((_, i) => `<th class="sc-col">R-${i+1}</th>`).join('')
+      : '';
     const rows = c.questions.map(q => {
-      const avgColor = q.avg >= 4.5 ? '#4caf8a' : q.avg >= 4 ? '#4c9bbf' : '#e0a84c';
+      const avg = parseFloat(q.avg);
+      const avgColor = avg >= 4.5 ? '#4caf8a' : avg >= 4 ? '#4c9bbf' : !isNaN(avg) && avg >= 3 ? '#e0a84c' : '#e05c4c';
+      const scoreCells = showIndividual
+        ? (q.scores || []).map(s => `<td class="sc-col">${chip(s)}</td>`).join('')
+        : '';
       return `<tr>
         <td>${q.text}</td>
-        ${q.scores.map(s => `<td class="sc-col">${chip(s)}</td>`).join('')}
-        <td class="sc-col" style="font-weight:600;color:${avgColor};">${q.avg.toFixed(1)}</td>
+        ${scoreCells}
+        <td class="sc-col" style="font-weight:600;color:${avgColor};">${safeNum(q.avg, 1)}</td>
       </tr>`;
     }).join('');
-    const comments = c.comments.filter(cm => cm && cm.toLowerCase() !== 'nan' && cm.trim() !== '').map((cm, i) => `
-      <div class="cmt"><div class="rtag">Respondent ${i+1}</div>${cm}</div>`).join('') 
+    const comments = (c.comments || []).filter(cm => cm && String(cm).toLowerCase() !== 'nan' && String(cm).trim() !== '').map((cm, i) => `
+      <div class="cmt"><div class="rtag">Respondent ${i+1}</div>${cm}</div>`).join('')
       || '<div class="cmt" style="color:#8a9bb0;font-style:italic;">No comments provided.</div>';
+
+    const compNum = String(ci + 1).padStart(2, '0');
 
     return `
     <section>
       <div class="wrap">
-        <div class="sec-lbl">Competency 0${ci+1}</div>
+        <div class="sec-lbl">Competency ${compNum}</div>
         <div class="comp-hdr">
-          <div class="comp-num">0${ci+1}</div>
+          <div class="comp-num">${compNum}</div>
           <div class="comp-name">${c.name}</div>
-          <div class="comp-avg" style="color:${colors[ci]};">${c.avg.toFixed(2)} / 5</div>
+          <div class="comp-avg" style="color:${colors[ci]};">${safeNum(c.avg)} / 5</div>
         </div>
-        <table class="qt">
-          <thead><tr><th>Question</th>${rHeaders}<th class="sc-col">Avg</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
+        <div style="overflow-x:auto;">
+          <table class="qt">
+            <thead><tr><th>Question</th>${rHeaders}<th class="sc-col">Avg</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        ${!showIndividual ? `<div style="font-size:11px;color:#8a9bb0;margin-bottom:16px;font-style:italic;">Individual scores hidden for datasets with more than 15 respondents — averages shown.</div>` : ''}
         <div class="cmt-lbl">Respondent Comments</div>
         ${comments}
       </div>
@@ -590,13 +614,13 @@ function renderReport(d) {
       <div class="sec-lbl">At a Glance</div>
       <div class="sec-ttl">Score Overview</div>
       <div class="osb">
-        <div class="bs">${d.overallAvg.toFixed(2)}</div>
+        <div class="bs">${safeNum(d.overallAvg)}</div>
         <div>
           <div class="bsl">Overall Average Score</div>
-          <div class="bsd">${d.analysis.overallNarrative}</div>
+          <div class="bsd">${d.analysis?.overallNarrative || ''}</div>
         </div>
       </div>
-      <div class="sg" style="grid-template-columns:repeat(${d.competencies.length},1fr);">${scoreCards}</div>
+      <div class="sg" style="grid-template-columns:repeat(${Math.min(d.competencies.length, 4)},1fr);">${scoreCards}</div>
     </div>
   </section>
 
@@ -623,13 +647,13 @@ function renderReport(d) {
     <div class="wrap">
       <div class="sec-lbl">Synthesis</div>
       <div class="sec-ttl">Final Analysis</div>
-      <div class="hb"><h3>Overall Picture</h3><p>${d.analysis.overallNarrative}</p></div>
+      <div class="hb"><h3>Overall Picture</h3><p>${d.analysis?.overallNarrative || ''}</p></div>
       <div class="ag">
-        <div class="ac"><h3 style="color:#4caf8a;">Consistent Strengths</h3><ul>${d.analysis.topStrengths.map(s=>`<li>${s}</li>`).join('')}</ul></div>
-        <div class="ac"><h3 style="color:#e0a84c;">Development Areas</h3><ul>${d.analysis.developmentAreas.map(s=>`<li>${s}</li>`).join('')}</ul></div>
+        <div class="ac"><h3 style="color:#4caf8a;">Consistent Strengths</h3><ul>${(d.analysis?.topStrengths || []).map(s=>`<li>${s}</li>`).join('')}</ul></div>
+        <div class="ac"><h3 style="color:#e0a84c;">Development Areas</h3><ul>${(d.analysis?.developmentAreas || []).map(s=>`<li>${s}</li>`).join('')}</ul></div>
       </div>
-      <div class="ac" style="margin-bottom:20px;"><h3>Priority Actions</h3><ul>${d.analysis.priorities.map(s=>`<li>${s}</li>`).join('')}</ul></div>
-      ${d.analysis.outlierNote ? `<div class="ac"><h3>Respondent Context</h3><p style="font-size:13.5px;color:#b0bec8;line-height:1.65;">${d.analysis.outlierNote}</p></div>` : ''}
+      <div class="ac" style="margin-bottom:20px;"><h3>Priority Actions</h3><ul>${(d.analysis?.priorities || []).map(s=>`<li>${s}</li>`).join('')}</ul></div>
+      ${d.analysis?.outlierNote ? `<div class="ac"><h3>Respondent Context</h3><p style="font-size:13.5px;color:#b0bec8;line-height:1.65;">${d.analysis.outlierNote}</p></div>` : ''}
     </div>
   </section>
 
