@@ -1,34 +1,40 @@
-export default async function handler(req, res) {
-  const requestId = Date.now().toString(36);
-  console.log(`[${requestId}] Request received: ${req.method}`);
+export const config = { runtime: 'edge' };
 
+export default async function handler(req) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 });
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    console.error(`[${requestId}] ERROR: ANTHROPIC_API_KEY not set`);
-    return res.status(500).json({ error: 'API key not configured on server.' });
+    return new Response(JSON.stringify({ error: 'API key not configured on server.' }), { status: 500 });
   }
 
+  let body;
   try {
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    body = await req.json();
+  } catch (e) {
+    return new Response(JSON.stringify({ error: 'Invalid request body.' }), { status: 400 });
+  }
 
-    if (!body || !body.messages) {
-      console.error(`[${requestId}] ERROR: Invalid request body:`, JSON.stringify(body).slice(0, 200));
-      return res.status(400).json({ error: 'Invalid request body — messages array missing.' });
-    }
+  if (!body || !body.messages) {
+    return new Response(JSON.stringify({ error: 'Invalid request body — messages array missing.' }), { status: 400 });
+  }
 
-    const employeeName = body._employeeName || 'unknown';
-    const rowCount = body._rowCount || 'unknown';
-    console.log(`[${requestId}] Generating report for: ${employeeName} | rows: ${rowCount}`);
+  // Strip internal metadata before forwarding to Anthropic
+  const anthropicBody = { ...body };
+  delete anthropicBody._employeeName;
+  delete anthropicBody._rowCount;
 
-    const anthropicBody = { ...body };
-    delete anthropicBody._employeeName;
-    delete anthropicBody._rowCount;
+  // Enable streaming
+  anthropicBody.stream = true;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const employeeName = body._employeeName || 'unknown';
+  const rowCount = body._rowCount || 'unknown';
+  console.log(`Generating report for: ${employeeName} | rows: ${rowCount}`);
+
+  try {
+    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -38,50 +44,81 @@ export default async function handler(req, res) {
       body: JSON.stringify(anthropicBody),
     });
 
-    const text = await response.text();
-    console.log(`[${requestId}] Anthropic response status: ${response.status}`);
-
-    if (!response.ok) {
-      console.error(`[${requestId}] Anthropic error: ${text}`);
-      return res.status(response.status).json({ error: text });
+    if (!upstream.ok) {
+      const errText = await upstream.text();
+      console.error(`Anthropic error ${upstream.status}: ${errText}`);
+      return new Response(JSON.stringify({ error: errText }), { status: upstream.status });
     }
 
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch (e) {
-      console.error(`[${requestId}] Failed to parse Anthropic response: ${text.slice(0, 500)}`);
-      return res.status(500).json({ error: 'Invalid response from AI — could not parse JSON.' });
-    }
+    // Stream Anthropic's SSE response back to the client as plain text chunks
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
 
-    const content = parsed?.content?.[0]?.text || '';
-    console.log(`[${requestId}] Claude response length: ${content.length} chars`);
+    const stream = new ReadableStream({
+      async start(controller) {
+        const reader = upstream.body.getReader();
+        let fullText = '';
 
-    try {
-      const cleaned = content.replace(/```json|```/g, '').trim();
-      const start = cleaned.indexOf('{');
-      const end = cleaned.lastIndexOf('}');
-      if (start === -1 || end === -1) throw new Error('No JSON object found');
-      JSON.parse(cleaned.slice(start, end + 1));
-      console.log(`[${requestId}] Report JSON valid — success`);
-    } catch (e) {
-      console.error(`[${requestId}] Claude returned invalid JSON. Preview: ${content.slice(0, 300)}`);
-      return res.status(500).json({ error: 'AI returned malformed data. Please try again.' });
-    }
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-    return res.status(200).json(parsed);
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              const data = line.slice(6).trim();
+              if (data === '[DONE]') continue;
+
+              try {
+                const parsed = JSON.parse(data);
+
+                // Extract text delta from Anthropic's streaming format
+                if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
+                  const text = parsed.delta.text || '';
+                  fullText += text;
+                  // Send raw text chunk to client
+                  controller.enqueue(encoder.encode(text));
+                }
+
+                // On stream end, we're done
+                if (parsed.type === 'message_stop') {
+                  console.log(`Stream complete. Total chars: ${fullText.length}`);
+                }
+
+                // Handle errors in stream
+                if (parsed.type === 'error') {
+                  console.error('Stream error:', parsed.error);
+                  controller.enqueue(encoder.encode(`__STREAM_ERROR__:${JSON.stringify(parsed.error)}`));
+                }
+              } catch (_) {
+                // Skip unparseable SSE lines
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Stream read error:', err.message);
+          controller.enqueue(encoder.encode(`__STREAM_ERROR__:${err.message}`));
+        } finally {
+          controller.close();
+        }
+      }
+    });
+
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Transfer-Encoding': 'chunked',
+        'X-Accel-Buffering': 'no',
+        'Cache-Control': 'no-cache',
+      },
+    });
 
   } catch (err) {
-    console.error(`[${requestId}] Unhandled error: ${err.message}`, err.stack);
-    return res.status(500).json({ error: err.message });
+    console.error('Unhandled error:', err.message);
+    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
   }
 }
-
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '10mb',
-    },
-    responseLimit: '10mb',
-  },
-};
