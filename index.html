@@ -370,12 +370,16 @@ function runPreflightChecks(rows, filename) {
     infos.push(`${respondentCount} respondents — individual scores will be hidden in tables, averages shown.`);
   }
 
-  // Check score scale — sample numeric cells from data rows
+  // Check score scale — sample numeric cells from data rows, ignore dates/years
   const numericValues = [];
   dataRows.forEach(row => {
     row.forEach(cell => {
       const n = parseFloat(cell);
-      if (!isNaN(n) && String(cell).trim() !== '') numericValues.push(n);
+      const s = String(cell).trim();
+      // Skip anything that looks like a year (1900-2099), a date string, or empty
+      if (!isNaN(n) && s !== '' && !(n >= 1900 && n <= 2099) && !s.includes('-') && !s.includes('/')) {
+        numericValues.push(n);
+      }
     });
   });
   if (numericValues.length > 0) {
