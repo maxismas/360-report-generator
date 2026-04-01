@@ -510,8 +510,8 @@ Return ONLY a valid JSON object — no markdown, no explanation, no text before 
       })
     });
 
-    let errData;
     if (!response.ok) {
+      let errData;
       try { errData = await response.json(); } catch(e) { errData = { error: await response.text() }; }
       const msg = typeof errData.error === 'string'
         ? (errData.error.includes('credit') ? 'Insufficient API credits. Please top up at console.anthropic.com → Plans & Billing.' : errData.error)
@@ -519,14 +519,39 @@ Return ONLY a valid JSON object — no markdown, no explanation, no text before 
       throw new Error(msg);
     }
 
-    const result = await response.json();
-    const text = result?.content?.[0]?.text;
-    if (!text) throw new Error('Empty response from AI. Please try again.');
+    // Read the stream chunk by chunk
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let accumulated = '';
+    let charCount = 0;
+
+    setLoadingStep('Receiving response...');
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+
+      // Check for stream error signal
+      if (chunk.includes('__STREAM_ERROR__:')) {
+        const errMsg = chunk.split('__STREAM_ERROR__:')[1];
+        throw new Error('Stream error: ' + errMsg);
+      }
+
+      accumulated += chunk;
+      charCount += chunk.length;
+
+      // Live progress update
+      setLoadingStep(`Receiving response... ${(charCount / 1000).toFixed(0)}k chars`);
+    }
+
+    if (!accumulated) throw new Error('Empty response from AI. Please try again.');
 
     setLoadingStep('Building report...');
     let data;
     try {
-      let cleaned = text.replace(/```json|```/g, '').trim();
+      let cleaned = accumulated.replace(/```json|```/g, '').trim();
       const start = cleaned.indexOf('{');
       const end = cleaned.lastIndexOf('}');
       if (start === -1 || end === -1) throw new Error('No JSON found');
