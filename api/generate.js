@@ -24,7 +24,9 @@ export default async function handler(req, res) {
     const rowCount = body._rowCount || 'unknown';
     console.log(`[${requestId}] Generating report for: ${employeeName} | rows: ${rowCount}`);
 
-    const { _employeeName, _rowCount, ...anthropicBody } = body;
+    const anthropicBody = { ...body };
+    delete anthropicBody._employeeName;
+    delete anthropicBody._rowCount;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -74,7 +76,9 @@ export default async function handler(req, res) {
 
 export const config = {
   api: {
-    bodyParser: true,
-    responseLimit: '8mb',
+    bodyParser: {
+      sizeLimit: '10mb',
+    },
+    responseLimit: '10mb',
   },
 };
