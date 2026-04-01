@@ -58,6 +58,7 @@ export default async function handler(req) {
       async start(controller) {
         const reader = upstream.body.getReader();
         let fullText = '';
+        let firstChunk = true;
 
         try {
           while (true) {
@@ -75,22 +76,30 @@ export default async function handler(req) {
               try {
                 const parsed = JSON.parse(data);
 
-                // Extract text delta from Anthropic's streaming format
+                // Log first event type to confirm stream format
+                if (firstChunk) {
+                  console.log(`First stream event type: ${parsed.type}`);
+                  firstChunk = false;
+                }
+
                 if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
                   const text = parsed.delta.text || '';
                   fullText += text;
-                  // Send raw text chunk to client
                   controller.enqueue(encoder.encode(text));
                 }
 
-                // On stream end, we're done
                 if (parsed.type === 'message_stop') {
                   console.log(`Stream complete. Total chars: ${fullText.length}`);
                 }
 
-                // Handle errors in stream
                 if (parsed.type === 'error') {
-                  console.error('Stream error:', parsed.error);
+                  console.error('Stream error from Anthropic:', JSON.stringify(parsed.error));
+                  controller.enqueue(encoder.encode(`__STREAM_ERROR__:${JSON.stringify(parsed.error)}`));
+                }
+
+                // Also catch top-level error responses
+                if (parsed.type === 'message' && parsed.error) {
+                  console.error('Message error:', JSON.stringify(parsed.error));
                   controller.enqueue(encoder.encode(`__STREAM_ERROR__:${JSON.stringify(parsed.error)}`));
                 }
               } catch (_) {
