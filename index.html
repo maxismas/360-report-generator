@@ -364,10 +364,10 @@ function runPreflightChecks(rows, filename) {
   // Respondent count warnings
   if (respondentCount === 0) {
     dangers.push('No respondent data found — check the file has data rows below the headers.');
-  } else if (respondentCount > 25) {
-    warnings.push(`${respondentCount} respondents detected — generation may take 30–60 seconds. Individual scores will be hidden and only averages shown to keep the report readable.`);
+  } else if (respondentCount > 35) {
+    warnings.push(`${respondentCount} respondents detected — this is a large dataset. Individual comments will be omitted and only scores + analysis will be generated to ensure reliable output.`);
   } else if (respondentCount > 15) {
-    infos.push(`${respondentCount} respondents — individual scores will be hidden in tables, averages shown.`);
+    infos.push(`${respondentCount} respondents — only the most insightful comments will be included. Individual scores hidden in tables, averages shown.`);
   }
 
   // Check score scale — sample numeric cells from data rows, ignore dates/years
@@ -450,55 +450,67 @@ async function generateReport() {
     }).join('\t')
   ).join('\n');
 
+  const respondentCount = parsedData.respondents.length;
+  const isLarge = respondentCount > 35;
+  const isMedium = respondentCount > 15 && respondentCount <= 35;
+  const isSmall = respondentCount <= 15;
+
+  // Scale limits to stay comfortably within 8000 token output
+  const commentLimit = isLarge ? 0 : isMedium ? 30 : 80;
+  const strengthLimit = isLarge ? 0 : isMedium ? 25 : 60;
+  const maxComments = isLarge ? 0 : isMedium ? 5 : respondentCount;
+
+  const commentsInstruction = isLarge
+    ? `- LARGE DATASET (${respondentCount} respondents): return empty arrays [] for "comments", "strengths", "growthAreas" — scores and analysis only. This is critical to avoid output limits.`
+    : isMedium
+    ? `- MEDIUM DATASET (${respondentCount} respondents): include only the ${maxComments} most insightful comments per competency, max ${commentLimit} words each. Strengths/growthAreas: top ${maxComments} only, max ${strengthLimit} words each.`
+    : `- Keep each comment under ${commentLimit} words. Strengths/growthAreas under ${strengthLimit} words each.`;
+
   const prompt = `You are analyzing a 360-degree feedback survey Excel file for ${name}${title ? ', ' + title : ''}${period ? ' (' + period + ')' : ''}.
 
 IMPORTANT INSTRUCTIONS:
-- The spreadsheet may have 1 or 2 header rows. A common format is: row 0 = competency group names, row 1 = individual question texts, rows 2+ = one respondent per row
+- The spreadsheet may have 1 or 2 header rows. Common format: row 0 = competency group names, row 1 = question texts, rows 2+ = one respondent per row
 - Scores are typically integers 1-5 or decimals — identify numeric columns as score columns
-- Comment columns typically contain long text and follow the score columns for each competency group
+- Comment columns contain long text and follow score columns for each competency group
 - Open-ended feedback (strengths / growth areas) are usually the last 2 text columns before any date column
-- Ignore any date/timestamp columns ("Submitted on" etc)
-- Some cells may be empty, "N/A", "nan", or whitespace — treat these as no response, use empty string ""
+- Ignore date/timestamp columns ("Submitted on" etc)
+- Empty, "N/A", "nan", whitespace cells = no response
 - NEVER invent scores or comments — only use what is in the data
-- For ALL datasets: keep each comment under 60 words maximum — this is critical
-- For strengths and growthAreas: max 50 words each
-- For analysis fields: keep concise, 1-2 sentences max per item
-- Omit empty string entries from arrays entirely
+- Scores must be numbers, not strings
+- Analysis fields: 1-2 sentences max, keep concise
+- Omit empty entries from arrays
+${commentsInstruction}
 
 Here is the raw tab-separated data:
 
 ${rawText}
 
-Return ONLY a valid JSON object — no markdown, no explanation, no text before or after the JSON:
+Return ONLY a valid JSON object — no markdown, no explanation, nothing before or after the JSON:
 
 {
   "employeeName": "${name}",
   "jobTitle": "${title}",
   "period": "${period}",
-  "respondentCount": <integer — count of actual respondent rows only>,
-  "overallAvg": <number rounded to 2dp>,
+  "respondentCount": <integer>,
+  "overallAvg": <number 2dp>,
   "competencies": [
     {
-      "name": "<competency group name>",
-      "avg": <number rounded to 2dp>,
+      "name": "<competency name>",
+      "avg": <number 2dp>,
       "questions": [
-        {
-          "text": "<question text>",
-          "scores": [<score1 as number>, <score2 as number>, ...],
-          "avg": <number rounded to 2dp>
-        }
+        { "text": "<question>", "scores": [<numbers>], "avg": <number 2dp> }
       ],
-      "comments": ["<comment text max 100 words, or empty string if none>", ...]
+      "comments": [${isLarge ? '' : `"<comment>"`}]
     }
   ],
-  "strengths": ["<strength from respondent 1, max 80 words>", ...],
-  "growthAreas": ["<growth area from respondent 1, max 80 words>", ...],
+  "strengths": [${isLarge ? '' : `"<strength>"`}],
+  "growthAreas": [${isLarge ? '' : `"<growth area>"`}],
   "analysis": {
-    "overallNarrative": "<2-3 sentence executive summary of this person's performance>",
-    "topStrengths": ["<key strength 1>", "<key strength 2>", "<key strength 3>"],
-    "developmentAreas": ["<development area 1>", "<development area 2>", "<development area 3>"],
-    "priorities": ["<recommended priority action 1>", "<priority 2>", "<priority 3>"],
-    "outlierNote": "<note about any outlier respondent if scores vary widely, otherwise null>"
+    "overallNarrative": "<2-3 sentence summary>",
+    "topStrengths": ["<strength 1>", "<strength 2>", "<strength 3>"],
+    "developmentAreas": ["<area 1>", "<area 2>", "<area 3>"],
+    "priorities": ["<priority 1>", "<priority 2>", "<priority 3>"],
+    "outlierNote": "<outlier note or null>"
   }
 }`;
 
@@ -508,8 +520,8 @@ Return ONLY a valid JSON object — no markdown, no explanation, no text before 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 16000,
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 8000,
         messages: [{ role: 'user', content: prompt }],
         _employeeName: name,
         _rowCount: parsedData.rawRows.length
